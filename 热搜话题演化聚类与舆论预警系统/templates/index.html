@@ -1,0 +1,638 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>热搜话题演化聚类与舆论预警看板</title>
+    <link rel="stylesheet" href="/static/style.css?v=202605161400" />
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+  </head>
+  <body>
+    <!-- 背景装饰图：可将 static/images/ 下的文件替换为您自己的图片 -->
+    <div class="page-bg" aria-hidden="true">
+      <img class="page-bg-img page-bg-img--pattern" src="/static/images/bg-main-pattern.svg" alt="" />
+      <img class="page-bg-img page-bg-img--network" src="/static/images/bg-deco-network.svg" alt="" />
+      <img class="page-bg-img page-bg-img--chart" src="/static/images/bg-deco-chart.svg" alt="" />
+    </div>
+    <div class="app-layout">
+      <aside class="outline-nav" id="outline-nav" aria-label="页面大纲">
+        <div class="outline-header">
+          <div class="outline-brand-wrap">
+            <div class="outline-brand">舆论预警看板</div>
+          </div>
+          <button
+            type="button"
+            id="outline-toggle"
+            class="outline-toggle"
+            aria-expanded="true"
+            aria-controls="outline-body"
+            aria-label="收起目录"
+            title="收起目录"
+          >
+            <span class="outline-toggle-icon" aria-hidden="true"></span>
+          </button>
+        </div>
+        <div class="outline-body" id="outline-body">
+          <p class="outline-hint">点击章节在右侧查看</p>
+          <nav class="outline-list">
+          <button type="button" class="outline-item active" data-pane="overview">一、数据概览</button>
+          <button type="button" class="outline-item" data-pane="alerts">二、实时预警列表</button>
+          <button type="button" class="outline-item" data-pane="cluster">三、话题聚类分布</button>
+          <button type="button" class="outline-item" data-pane="curves">四、话题演化曲线（热度）</button>
+        </nav>
+        </div>
+      </aside>
+
+      <div class="main-column">
+        <header class="top-bar">
+          <h1 class="top-title">热搜话题演化聚类与舆论预警系统</h1>
+          <button type="button" id="refresh-btn">刷新数据</button>
+        </header>
+        <div id="section-breadcrumb" class="section-breadcrumb" aria-live="polite"></div>
+        <div id="global-error" class="global-error" role="alert" hidden></div>
+
+        <div id="pane-overview" class="content-pane active">
+          <section class="panel">
+            <h2 class="pane-heading">一、数据概览</h2>
+            <div class="panel stats" id="stats"></div>
+          </section>
+        </div>
+
+        <div id="pane-alerts" class="content-pane">
+          <section class="panel">
+            <h2 class="pane-heading">二、实时预警列表</h2>
+            <div class="table-wrap--alerts">
+              <div class="table-wrap-alerts-x">
+                <table id="alert-table">
+                <thead>
+                  <tr>
+                    <th>链路ID</th>
+                    <th>平台</th>
+                    <th>话题</th>
+                    <th>预警模式</th>
+                    <th>等级</th>
+                    <th>阶段</th>
+                    <th>置信度</th>
+                    <th>风险分</th>
+                  </tr>
+                </thead>
+                <tbody></tbody>
+              </table>
+              </div>
+            </div>
+          </section>
+        </div>
+
+        <div id="pane-cluster" class="content-pane">
+          <section class="panel panel-chart">
+            <h2 class="pane-heading">三、所有话题聚类分布</h2>
+            <p class="chart-caption">柱状图：各演化模式对应的话题链数量</p>
+            <div id="dist-chart-wrap" class="chart-wrap chart-wrap--bar">
+              <p id="dist-empty" class="empty-hint">暂无聚类柱状数据，请先合并各平台快照或检查话题链是否为空。</p>
+              <canvas id="distChart" height="120"></canvas>
+            </div>
+            <p class="chart-caption">
+              散点图：每个点表示一条话题链；横轴为峰值出现相对位置（0≈链开端即达峰），纵轴为热度衰减比例；颜色表示演化模式。悬停可查看话题卡片。
+            </p>
+            <div id="scatter-chart-inner" class="chart-wrap chart-wrap--scatter">
+              <p id="scatter-empty" class="empty-hint">暂无散点数据（无话题链或特征为空）。</p>
+              <canvas id="scatterChart" height="200"></canvas>
+              <div id="scatter-tooltip-card" class="scatter-tooltip-card" role="tooltip" aria-hidden="true"></div>
+            </div>
+          </section>
+        </div>
+
+        <div id="pane-curves" class="content-pane">
+          <section class="panel panel-chart">
+            <h2 class="pane-heading">四、话题演化曲线（热度）</h2>
+            <div class="curve-toolbar">
+              <label class="curve-toolbar-label" for="curve-platform-filter">平台筛选</label>
+              <select id="curve-platform-filter" class="curve-toolbar-select">
+                <option value="all">全部</option>
+                <option value="weibo">微博</option>
+                <option value="bilibili">B站</option>
+                <option value="douyin">抖音</option>
+              </select>
+              <span class="curve-toolbar-hint">默认展示前 5 条；筛选后仍取前 5 条。</span>
+            </div>
+            <div id="curve-chart-wrap" class="chart-wrap">
+              <p id="curve-empty" class="empty-hint">暂无演化曲线样本，请先采集多时间点数据。</p>
+              <canvas id="curveChart" height="140"></canvas>
+            </div>
+          </section>
+        </div>
+      </div>
+    </div>
+    <div class="watermark">202321156088-裴宇慧</div>
+
+    <script>
+      let distChart = null;
+      let curveChart = null;
+      let scatterChart = null;
+      let lastData = null;
+
+      const PANE_LABELS = {
+        overview: "一、数据概览",
+        alerts: "二、实时预警列表",
+        cluster: "三、话题聚类分布",
+        curves: "四、话题演化曲线（热度）",
+      };
+
+      const PATTERN_COLORS = {
+        "闪电爆发-速衰型": "#e57373",
+        "缓慢发酵-持续型": "#64b5f6",
+        "反转振荡型": "#ffb74d",
+        "争议升级型": "#ba68c8",
+        "平稳消退型": "#81c784",
+      };
+
+      function colorForPattern(pat) {
+        return PATTERN_COLORS[pat] || "#90a4ae";
+      }
+
+      function escapeHtml(s) {
+        if (s == null) return "";
+        return String(s)
+          .replace(/&/g, "&amp;")
+          .replace(/</g, "&lt;")
+          .replace(/>/g, "&gt;")
+          .replace(/"/g, "&quot;");
+      }
+
+      function setChartWrapEmpty(wrapEl, isEmpty) {
+        if (!wrapEl) return;
+        wrapEl.classList.toggle("is-empty", !!isEmpty);
+      }
+
+      function updateBreadcrumb(paneId) {
+        const el = document.getElementById("section-breadcrumb");
+        if (!el) return;
+        const label = PANE_LABELS[paneId] || paneId;
+        el.textContent = `当前章节：${label}`;
+      }
+
+      function setGlobalError(msg) {
+        const el = document.getElementById("global-error");
+        if (!el) return;
+        if (msg) {
+          el.textContent = msg;
+          el.hidden = false;
+        } else {
+          el.textContent = "";
+          el.hidden = true;
+        }
+      }
+
+      function setRefreshLoading(loading) {
+        const btn = document.getElementById("refresh-btn");
+        if (!btn) return;
+        btn.disabled = loading;
+        btn.classList.toggle("is-loading", loading);
+        btn.textContent = loading ? "加载中…" : "刷新数据";
+      }
+
+      function scatterExternalTooltip(context) {
+        const el = document.getElementById("scatter-tooltip-card");
+        const tooltip = context.tooltip;
+        if (!el || !tooltip) return;
+        if (tooltip.opacity === 0) {
+          el.style.opacity = "0";
+          el.style.visibility = "hidden";
+          el.setAttribute("aria-hidden", "true");
+          return;
+        }
+        const dp = tooltip.dataPoints && tooltip.dataPoints[0];
+        if (!dp) return;
+        const d = dp.raw;
+        const plat = { weibo: "微博", bilibili: "B站", douyin: "抖音" }[d.platform] || d.platform || "—";
+        el.innerHTML = `
+          <div class="tt-head">
+            <span class="tt-pattern" style="background:${colorForPattern(d.pattern)}">${escapeHtml(d.pattern || "—")}</span>
+            <span class="tt-plat">${escapeHtml(plat)}</span>
+          </div>
+          <div class="tt-title">${escapeHtml(d.title || d.chain_id)}</div>
+          <dl class="tt-dl">
+            <div><dt>链路 ID</dt><dd>${escapeHtml(d.chain_id)}</dd></div>
+            <div><dt>簇编号</dt><dd>${escapeHtml(String(d.cluster))}</dd></div>
+            <div><dt>快照点数</dt><dd>${escapeHtml(String(d.n_points))}</dd></div>
+            <div><dt>峰值热度</dt><dd>${escapeHtml(String(d.peak_heat))}</dd></div>
+            <div><dt>热度斜率</dt><dd>${escapeHtml(String(d.heat_slope))}</dd></div>
+            <div><dt>热度波动</dt><dd>${escapeHtml(String(d.heat_volatility))}</dd></div>
+            <div><dt>衰减比例</dt><dd>${escapeHtml(String(d.decay_ratio))}</dd></div>
+            <div><dt>情感波动</dt><dd>${escapeHtml(String(d.sentiment_volatility))}</dd></div>
+            <div><dt>排名变化</dt><dd>${escapeHtml(String(d.rank_change))}</dd></div>
+            <div><dt>末端负向度</dt><dd>${escapeHtml(String(d.negative_end))}</dd></div>
+          </dl>
+        `;
+        const canvas = context.chart.canvas;
+        const rect = canvas.getBoundingClientRect();
+        const anchorX = rect.left + (tooltip.caretX || 0);
+        const anchorY = rect.top + (tooltip.caretY || 0);
+        el.style.position = "fixed";
+        el.style.left = `${anchorX + 12}px`;
+        el.style.top = `${anchorY + 12}px`;
+        el.style.opacity = "1";
+        el.style.visibility = "visible";
+        el.setAttribute("aria-hidden", "false");
+
+        const pad = 10;
+        const gap = 12;
+        requestAnimationFrame(() => {
+          const br = el.getBoundingClientRect();
+          let left = br.left;
+          let top = br.top;
+          if (br.bottom > window.innerHeight - pad) {
+            top = anchorY - br.height - gap;
+          }
+          if (br.right > window.innerWidth - pad) {
+            left = anchorX - br.width - gap;
+          }
+          left = Math.max(pad, Math.min(left, window.innerWidth - br.width - pad));
+          top = Math.max(pad, Math.min(top, window.innerHeight - br.height - pad));
+          el.style.left = `${left}px`;
+          el.style.top = `${top}px`;
+        });
+      }
+
+      function getActivePane() {
+        const el = document.querySelector(".outline-item.active");
+        return el ? el.dataset.pane : "overview";
+      }
+
+      function activatePane(paneId) {
+        updateBreadcrumb(paneId);
+        document.querySelectorAll(".outline-item").forEach((btn) => {
+          btn.classList.toggle("active", btn.dataset.pane === paneId);
+        });
+        document.querySelectorAll(".content-pane").forEach((pane) => {
+          pane.classList.toggle("active", pane.id === "pane-" + paneId);
+        });
+        if (!lastData) return;
+        requestAnimationFrame(() => {
+          if (paneId === "cluster") {
+            renderDist(lastData.cluster_distribution);
+            distChart?.resize();
+            renderScatter(lastData.scatter_points || []);
+            scatterChart?.resize();
+          }
+          if (paneId === "curves") {
+            renderCurve(lastData.curves);
+            curveChart?.resize();
+          }
+        });
+      }
+
+      document.querySelectorAll(".outline-item").forEach((btn) => {
+        btn.addEventListener("click", () => activatePane(btn.dataset.pane));
+      });
+
+      (function initOutlineToggle() {
+        const nav = document.getElementById("outline-nav");
+        const btn = document.getElementById("outline-toggle");
+        if (!nav || !btn) return;
+        const STORAGE_KEY = "outline-nav-collapsed";
+        function setCollapsed(collapsed) {
+          nav.classList.toggle("is-collapsed", collapsed);
+          btn.setAttribute("aria-expanded", String(!collapsed));
+          btn.setAttribute("aria-label", collapsed ? "展开目录" : "收起目录");
+          btn.title = collapsed ? "展开目录" : "收起目录";
+          try {
+            localStorage.setItem(STORAGE_KEY, collapsed ? "1" : "0");
+          } catch (_) {}
+        }
+        let collapsed = false;
+        try {
+          collapsed = localStorage.getItem(STORAGE_KEY) === "1";
+        } catch (_) {}
+        setCollapsed(collapsed);
+        btn.addEventListener("click", () => setCollapsed(!nav.classList.contains("is-collapsed")));
+      })();
+
+      function renderStats(stats) {
+        const el = document.getElementById("stats");
+        el.innerHTML = `
+          <div class="stat"><span>总采样点</span><strong>${stats.raw_points}</strong></div>
+          <div class="stat"><span>话题链数量</span><strong>${stats.chains}</strong></div>
+          <div class="stat"><span>实时预警数</span><strong>${stats.active_alerts}</strong></div>
+        `;
+      }
+
+      function renderMeta(meta) {
+        const old = document.getElementById("meta-block");
+        if (old) old.remove();
+        const panel = document.getElementById("stats");
+        const block = document.createElement("div");
+        block.id = "meta-block";
+        block.className = "meta-block";
+        const w = meta.platform_counts?.weibo ?? 0;
+        const b = meta.platform_counts?.bilibili ?? 0;
+        const d = meta.platform_counts?.douyin ?? 0;
+        block.innerHTML = `
+          <div class="meta-row">
+            <span class="meta-label">数据源</span>
+            <span class="meta-source">${escapeHtml(meta.data_source_label || "")}</span>
+          </div>
+          <div class="meta-chips" aria-label="各平台采样条数">
+            <span class="chip chip-weibo">微博 ${w}</span>
+            <span class="chip chip-bili">B站 ${b}</span>
+            <span class="chip chip-douyin">抖音 ${d}</span>
+          </div>
+          <div class="meta-row meta-row--sub">
+            <span>最后刷新：${escapeHtml(meta.refreshed_at || "")}</span>
+            <span class="meta-seed">seed=${escapeHtml(String(meta.seed ?? ""))}</span>
+          </div>
+        `;
+        panel.appendChild(block);
+      }
+
+      function renderAlerts(alerts) {
+        const tbody = document.querySelector("#alert-table tbody");
+        if (!alerts || alerts.length === 0) {
+          tbody.innerHTML = `<tr><td colspan="8" class="empty-cell">暂无预警记录。当前无命中「争议升级型 / 反转振荡型」或未达置信度阈值。</td></tr>`;
+          return;
+        }
+        tbody.innerHTML = alerts
+          .map(
+            (a) => `
+            <tr>
+              <td>${escapeHtml(a.chain_id)}</td>
+              <td>${escapeHtml(a.platform ?? "—")}</td>
+              <td>${escapeHtml(a.topic_title)}</td>
+              <td>${escapeHtml(a.predicted_pattern)}</td>
+              <td class="level-${a.level}">${escapeHtml(a.level)}</td>
+              <td>${escapeHtml(a.phase)}</td>
+              <td>${escapeHtml(String(a.confidence))}</td>
+              <td>${escapeHtml(String(a.risk_score))}</td>
+            </tr>
+          `
+          )
+          .join("");
+      }
+
+      const tick01 = (v) => {
+        const n = Number(v);
+        if (Number.isNaN(n)) return "";
+        return n.toFixed(2);
+      };
+
+      function renderDist(dist) {
+        const ctx = document.getElementById("distChart");
+        const wrap = document.getElementById("dist-chart-wrap");
+        if (!ctx) return;
+        if (!dist || dist.length === 0) {
+          if (distChart) {
+            distChart.destroy();
+            distChart = null;
+          }
+          setChartWrapEmpty(wrap, true);
+          return;
+        }
+        setChartWrapEmpty(wrap, false);
+        const labels = dist.map((x) => x.pattern);
+        const values = dist.map((x) => x.count);
+        if (distChart) distChart.destroy();
+        distChart = new Chart(ctx, {
+          type: "bar",
+          data: {
+            labels,
+            datasets: [{ label: "话题链数量", data: values }],
+          },
+          options: {
+            responsive: true,
+            maintainAspectRatio: false,
+            scales: {
+              y: {
+                title: { display: true, text: "话题链数量" },
+                ticks: {
+                  callback: (v) => (Number.isInteger(v) ? v : Math.round(v)),
+                },
+              },
+              x: {
+                ticks: { maxRotation: 28, minRotation: 0, autoSkip: true, maxTicksLimit: 12 },
+              },
+            },
+            plugins: { legend: { display: false } },
+          },
+        });
+      }
+
+      function renderScatter(points) {
+        const ctx = document.getElementById("scatterChart");
+        const tip = document.getElementById("scatter-tooltip-card");
+        const wrap = document.getElementById("scatter-chart-inner");
+        if (!ctx) return;
+        if (tip) {
+          tip.style.opacity = "0";
+          tip.style.visibility = "hidden";
+        }
+        if (!points || points.length === 0) {
+          if (scatterChart) {
+            scatterChart.destroy();
+            scatterChart = null;
+          }
+          setChartWrapEmpty(wrap, true);
+          return;
+        }
+        setChartWrapEmpty(wrap, false);
+        const byPattern = {};
+        points.forEach((p) => {
+          const k = p.pattern || "其他";
+          if (!byPattern[k]) byPattern[k] = [];
+          byPattern[k].push({
+            x: p.x,
+            y: p.y,
+            chain_id: p.chain_id,
+            title: p.title,
+            pattern: p.pattern,
+            platform: p.platform,
+            cluster: p.cluster,
+            n_points: p.n_points,
+            peak_heat: p.peak_heat,
+            heat_slope: p.heat_slope,
+            heat_volatility: p.heat_volatility,
+            decay_ratio: p.decay_ratio,
+            sentiment_volatility: p.sentiment_volatility,
+            rank_change: p.rank_change,
+            negative_end: p.negative_end,
+          });
+        });
+        const datasets = Object.keys(byPattern).map((pat) => ({
+          label: pat,
+          data: byPattern[pat],
+          pointRadius: 6,
+          pointHoverRadius: 10,
+          pointBackgroundColor: colorForPattern(pat),
+          pointBorderColor: "#fff",
+          pointBorderWidth: 1,
+        }));
+        if (scatterChart) scatterChart.destroy();
+        scatterChart = new Chart(ctx, {
+          type: "scatter",
+          data: { datasets },
+          options: {
+            responsive: true,
+            maintainAspectRatio: false,
+            interaction: { mode: "nearest", intersect: false, axis: "xy" },
+            scales: {
+              x: {
+                min: 0,
+                max: 1,
+                title: { display: true, text: "峰值出现相对位置（0→开端，1→末端）" },
+                ticks: { callback: tick01 },
+              },
+              y: {
+                min: 0,
+                max: 1,
+                title: { display: true, text: "热度衰减比例（相对峰值）" },
+                ticks: { callback: tick01 },
+              },
+            },
+            plugins: {
+              legend: {
+                position: "bottom",
+                labels: { boxWidth: 10, padding: 10, usePointStyle: true, font: { size: 11 } },
+              },
+              tooltip: {
+                enabled: false,
+                external: scatterExternalTooltip,
+              },
+            },
+          },
+        });
+      }
+
+      function filterCurves(curves) {
+        const sel = document.getElementById("curve-platform-filter");
+        const v = sel ? sel.value : "all";
+        if (!curves) return [];
+        if (v === "all") return curves;
+        return curves.filter((c) => (c.platform || "weibo") === v);
+      }
+
+      function renderCurve(curves) {
+        const ctx = document.getElementById("curveChart");
+        const wrap = document.getElementById("curve-chart-wrap");
+        if (!ctx) return;
+        const filtered = filterCurves(curves || []);
+        const picked = filtered.slice(0, 5);
+        if (picked.length === 0) {
+          if (curveChart) {
+            curveChart.destroy();
+            curveChart = null;
+          }
+          setChartWrapEmpty(wrap, true);
+          return;
+        }
+        setChartWrapEmpty(wrap, false);
+        const maxLen = Math.max(...picked.map((c) => c.heat.length));
+        const labels = Array.from({ length: maxLen }, (_, i) => `${i + 1}`);
+        const datasets = picked.map((c) => ({
+          label: `${c.platform || ""}-${c.pattern}-${c.chain_id}`,
+          data: c.heat,
+          tension: 0.2,
+          fill: false,
+        }));
+        if (curveChart) curveChart.destroy();
+        curveChart = new Chart(ctx, {
+          type: "line",
+          data: { labels, datasets },
+          options: {
+            responsive: true,
+            maintainAspectRatio: false,
+            scales: {
+              x: { title: { display: true, text: "时间点序号" } },
+              y: {
+                title: { display: true, text: "热度" },
+                ticks: {
+                  callback: (v) => {
+                    const n = Number(v);
+                    if (n >= 1e6) return (n / 1e6).toFixed(1) + "M";
+                    if (n >= 1e4) return (n / 1e4).toFixed(1) + "万";
+                    if (Math.abs(n) >= 1000) return (n / 1000).toFixed(1) + "k";
+                    return Number.isInteger(n) ? n : n.toFixed(0);
+                  },
+                },
+              },
+            },
+            plugins: {
+              legend: {
+                position: "bottom",
+                labels: { boxWidth: 10, padding: 8, font: { size: 11 }, usePointStyle: true },
+              },
+            },
+          },
+        });
+      }
+
+      async function loadData() {
+        setGlobalError("");
+        const res = await fetch(`/api/dashboard?t=${Date.now()}`, { cache: "no-store" });
+        if (!res.ok) {
+          throw new Error(`加载失败（HTTP ${res.status}）`);
+        }
+        const data = await res.json();
+        lastData = data;
+
+        if (distChart) {
+          distChart.destroy();
+          distChart = null;
+        }
+        if (curveChart) {
+          curveChart.destroy();
+          curveChart = null;
+        }
+        if (scatterChart) {
+          scatterChart.destroy();
+          scatterChart = null;
+        }
+        const tip = document.getElementById("scatter-tooltip-card");
+        if (tip) {
+          tip.innerHTML = "";
+          tip.style.opacity = "0";
+          tip.style.visibility = "hidden";
+        }
+
+        renderStats(data.stats);
+        renderMeta(data.meta);
+        renderAlerts(data.alerts);
+
+        const pane = getActivePane();
+        if (pane === "cluster") {
+          renderDist(data.cluster_distribution);
+          requestAnimationFrame(() => distChart?.resize());
+          renderScatter(data.scatter_points || []);
+          requestAnimationFrame(() => scatterChart?.resize());
+        }
+        if (pane === "curves") {
+          renderCurve(data.curves);
+          requestAnimationFrame(() => curveChart?.resize());
+        }
+      }
+
+      document.getElementById("refresh-btn").addEventListener("click", async () => {
+        setRefreshLoading(true);
+        setGlobalError("");
+        try {
+          const rr = await fetch(`/api/refresh?t=${Date.now()}`, { cache: "no-store" });
+          if (!rr.ok) throw new Error(`刷新接口失败（HTTP ${rr.status}）`);
+          await loadData();
+        } catch (e) {
+          setGlobalError(e && e.message ? e.message : "网络或服务器异常，请稍后重试。");
+        } finally {
+          setRefreshLoading(false);
+        }
+      });
+
+      document.getElementById("curve-platform-filter").addEventListener("change", () => {
+        if (!lastData) return;
+        renderCurve(lastData.curves);
+        requestAnimationFrame(() => curveChart?.resize());
+      });
+
+      updateBreadcrumb("overview");
+      loadData().catch((e) => {
+        setGlobalError(e && e.message ? e.message : "加载看板数据失败。");
+      });
+    </script>
+  </body>
+</html>
